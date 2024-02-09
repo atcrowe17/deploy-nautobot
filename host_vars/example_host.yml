@@ -26,7 +26,7 @@ system_nb_home_dir:
 system_nb_user:
 # local system nautobot user account password. nautobot docs specify nautobot
 system_nb_password:
-# version of nautobot to install using pip3. defaults to "==2.1.2". reference nautobot docs for available versions
+# version of nautobot to install using pip3. use "==<version>". defaults to "==2.1.2". reference nautobot docs for available versions
 nb_app_version:
 # list of allowed hostnames or ip addresses for the nauotbot app to be accessed by.
 allowed_hosts: []
