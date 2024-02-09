@@ -44,8 +44,3 @@ If deploying a non-default version of Nautobot, check the installation guide for
 
 Nautobot Installation Guide - https://docs.nautobot.com/projects/core/en/latest/user-guide/administration/installation/
 
-# Support Contacts
-
-Ty Crowe  
-email: ty@aopinc.com  
-slack: tyc17afguy@gmail.com  
