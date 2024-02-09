@@ -1,0 +1,34 @@
+# Let NetworkManager manage all devices on this system
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+{% if interfaces is defined %}
+{% for interface in interfaces %}
+    {{ interface.name }}:
+{% if interface.dhcp4 is defined and interface.dhcp4 == true %}
+      dhcp4: true
+{% endif %}
+{% if interface.addresses is defined and interface.addresses|length >0 %}
+      addresses:
+{% for ip in interface.addresses %}
+        - {{ ip.ip_address }}/{{ ip.cidr }}
+{% endfor %}
+{% endif %}
+{% if interface.nameservers is defined and interface.nameservers is not none %}
+      nameservers:
+        addresses:
+{% for nameserver in interface.nameservers %}
+          - {{ nameserver.ip_address }}
+{% endfor %}
+{% endif %}
+{% if interface.routes is defined and interface.routes|length >0 %}
+      routes:
+{% for route in interface.routes %}
+        - to: {{ route.destination }}
+          via: {{ route.next_hop }}
+{% endfor %}
+{% endif %}
+      optional: true
+{% endfor %}
+{% endif %}

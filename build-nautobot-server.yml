@@ -1,0 +1,611 @@
+---
+- name: build production nautobot server
+  hosts: all
+  gather_facts: true
+
+  tasks:
+   - name: systemd stop unattended-upgrades.service
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - systemctl stop unattended-upgrades.service
+     ignore_errors: true
+     tags:
+     - remove_unattended_upgrades
+   - name: remove apt packages
+     become: true
+     apt:
+       pkg:
+         - unattended-upgrades
+       state: absent
+       purge: true
+     tags:
+     - remove_unattended_upgrades
+   # Ensure networking is configured properly
+   - name: create production netplan config
+     ansible.builtin.template:
+       src: ./templates/netplan/production.j2
+       dest: "./netplan/production/{{ inventory_hostname }}.yaml"
+     delegate_to: localhost
+     tags:
+     - deploy_netplan
+   - name: copy production netplan config to remote
+     become: true
+     copy:
+       src: "./netplan/production/{{ inventory_hostname }}.yaml"
+       dest: /etc/netplan/00-installer-config.yaml
+     tags:
+     - deploy_netplan
+   - name: netplan apply
+     become: true
+     command: netplan apply
+     async: 45
+     poll: 0
+     tags:
+     - deploy_netplan
+   - name: Change Hostnamectl
+     become: true
+     command: "hostnamectl set-hostname {{ inventory_hostname }}"
+   - name: Update Hostname in Host File
+     become: true
+     lineinfile:
+       path: /etc/hosts
+       regexp: '^127\.0\.1\.1.*[^local].*'
+       line: '127.0.1.1 {{ inventory_hostname }}'
+     tags:
+     - hostfile
+   - name: Reboot System
+     become: true
+     reboot:
+   # Pre-requisites for adding the NodeSource Node.js repository
+   - name: Apt Install Required Packages
+     become: true
+     apt:
+       pkg:
+         - ca-certificates
+         - curl
+         - gnupg
+       state: latest
+       update_cache: true
+   # NodeSource Node.js Repository Setup
+   - name: Create the keyring directory if it doesn't exist
+     become: true
+     ansible.builtin.file:
+       path: /etc/apt/keyrings
+       state: directory
+   - name: Add the Node.js signing key
+     become: true
+     ansible.builtin.apt_key:
+       url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+       keyring: /etc/apt/keyrings/nodesource.gpg
+   - name: Add the Node.js repository
+     become: true
+     # Nautobot requires Node.js 18, the latest LTS release
+     environment:
+       NODE_MAJOR: "{{ node_js_version | default('18') }}" 
+     command: "{{ item }}"
+     with_items:
+       - echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list  # Add the Node.js repository
+   - name: Apt Install Required Packages
+     become: true
+     apt:
+       pkg:
+         - git
+         - python3
+         - python3-pip
+         - python3-venv
+         - python3-dev
+         - redis-server
+         - nodejs
+         - postgresql
+         # to support postgresql ansible module
+         - libpq-dev
+         - python3-psycopg2
+         # to get postgres ansible module to authenticate with postgres user
+         - acl
+         # install expect to automate nautobot-server init
+         - expect
+       state: latest
+       update_cache: true
+   - name: Create a new database for Nautobot
+     become: true
+     become_user: "{{ postgres_default_user }}"
+     community.postgresql.postgresql_db:
+       name: "{{ postgres_db_name}}"
+   - name: Create nautobot user for nautobot database
+     become: true
+     become_user: "{{ postgres_default_user }}"     
+     community.postgresql.postgresql_user:
+       db: "{{ postgres_db_name}}"
+       name: "{{ postgres_nb_user }}"
+       password: "{{ postgres_nb_password }}"
+   - name: Grant all privs to nautobot on database nautobot
+     become: true
+     become_user: "{{ postgres_default_user }}"       
+     community.postgresql.postgresql_privs:
+       database: "{{ postgres_db_name}}"
+       state: present
+       privs: ALL
+       type: database
+       roles: nautobot
+   - name: Grant create privs to nautobot on database nautobot
+     become: true
+     become_user: "{{ postgres_default_user }}"       
+     community.postgresql.postgresql_privs:
+       database: "{{ postgres_db_name }}"
+       state: present
+       privs: CREATE
+       type: schema
+       objs: public
+       roles: nautobot
+   - name: Test database connection w/ nautobot user
+     community.postgresql.postgresql_ping:
+       db: "{{ postgres_db_name }}"
+       login_host: localhost
+       login_user: "{{ postgres_nb_user }}"
+       login_password: "{{ postgres_nb_password }}"
+     register: result
+   - name: Continue if the nautobot user can connect to the database
+     when: result.is_available == true
+     debug:
+       msg: "{{ result }}"
+   - name: Test redis functionality. Continue if redis-cli ping returns PONG.
+     command: "{{ item }}"
+     with_items:
+       - redis-cli ping
+     register: redis_ping
+     failed_when: "'PONG' not in redis_ping.stdout"
+   - name: Add the user 'james' with a bash shell, appending the group 'admins' and 'developers' to the user's groups
+     become: true
+     ansible.builtin.user:
+       home: "{{ system_nb_home_dir }}"
+       name: "{{ system_nb_user }}"
+       password: "{{ system_nb_password }}"
+       shell: /bin/bash
+       system: true
+     tags:
+     - add_users
+   - name: Create venv for Nautobot
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - runuser -l {{ system_nb_user }} -c 'python3 -m venv {{ system_nb_home_dir }}'
+     tags:
+     - add_nb_venv
+   - name: Set NAUTOBOT_ROOT environment variable
+     become: true
+     lineinfile:
+       path: '~{{ system_nb_user }}/.bashrc'
+       line: 'export NAUTOBOT_ROOT={{ system_nb_home_dir }}'
+     tags:
+     - set_nb_root_env_var
+   - name: Ensure NAUTOBOT_ROOT environment variable is set
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - echo '~{{ system_nb_user }}/$NAUTOBOT_ROOT'
+     register: nb_root_env_var
+     tags:
+     - test_nb_root_env_var
+   - name: View NAUTOBOT_ROOT environment variable
+     debug:
+       msg: "{{ nb_root_env_var }}"
+     tags:
+      - test_nb_root_env_var
+   - name: Upgrade pip3
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - runuser -l {{ system_nb_user }} -c 'pip3 install --upgrade pip wheel'
+     tags:
+     - upgrade_pip3
+   - name: Install Nautobot
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - runuser -l {{ system_nb_user }} -c 'pip3 install nautobot{{ nb_app_version | default("==2.1.2") }}'
+     tags:
+     - install_nautobot
+   - name: Verify Nautobot installation by checking version
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - runuser -l {{ system_nb_user }} -c 'nautobot-server --version'
+     register: nb_version
+     tags:
+     - install_nautobot
+     - check_nautobot_version
+   - name: View Nautobot version
+     debug:
+       msg: "{{ nb_version }}"
+     tags:
+      - install_nautobot
+      - check_nautobot_version
+   - name: initialize nautobot
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server init\r"
+        expect -exact "\[y/n\]: "
+        send -- "y\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - init_nautobot
+   - name: update allowed hosts in nautobot_config.py
+     become: true
+     ansible.builtin.lineinfile:
+       path: '{{ system_nb_home_dir }}/nautobot_config.py'
+       regexp: '^# ALLOWED_HOSTS.*'
+       line: 'ALLOWED_HOSTS = {{ allowed_hosts }}'
+     tags:
+     - update_nautobot_allowed_hosts
+     - update_required_settings
+   - name: update database settings in nautobot_config.py
+     become: true
+     ansible.builtin.blockinfile:
+       path: '{{ system_nb_home_dir }}/nautobot_config.py'
+       block: |
+         DATABASES = {
+             "default": {
+                 "NAME": os.getenv("NAUTOBOT_DB_NAME", "{{ postgres_db_name }}"),  # Database name
+                 "USER": os.getenv("NAUTOBOT_DB_USER", "{{ postgres_nb_user }}"),  # Database username
+                 "PASSWORD": os.getenv("NAUTOBOT_DB_PASSWORD", "{{ postgres_nb_password }}"),  # Database password
+                 "HOST": os.getenv("NAUTOBOT_DB_HOST", "localhost"),  # Database server
+                 "PORT": os.getenv("NAUTOBOT_DB_PORT", ""),  # Database port (leave blank for default)
+                 "CONN_MAX_AGE": int(os.getenv("NAUTOBOT_DB_TIMEOUT", "300")),  # Database timeout
+                 "ENGINE": os.getenv(
+                     "NAUTOBOT_DB_ENGINE",
+                     "django_prometheus.db.backends.postgresql" if METRICS_ENABLED else "django.db.backends.postgresql",
+                 ),  # Database driver ("mysql" or "postgresql")
+             }
+         }
+     tags:
+     - update_nautobot_database_settings
+     - update_required_settings
+   - name: update nautobot local_requirements
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - runuser -l nautobot -c 'echo "nautobot[napalm]" >> {{ system_nb_home_dir }}/local_requirements.txt'
+       - runuser -l nautobot -c 'echo nautobot-bgp-models >> {{ system_nb_home_dir }}/local_requirements.txt'
+     tags:
+     - update_local_requirements
+   - name: migrate nautobot 
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server migrate\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - nautobot_migrate
+   - name: create nautobot superuser
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server createsuperuser\r"
+        expect -exact "Username: "
+        send -- "{{ nb_app_superuser }}\r"
+        expect -exact "Email address: "
+        send -- "email@email.com\r"
+        expect -exact "Password: "
+        send -- "{{ nb_app_superuser_password }}\r"
+        expect -exact "Password \(again\): "
+        send -- "{{ nb_app_superuser_password }}\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - nautobot_createsuperuser
+   - name: nautobot collectstatic
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server collectstatic\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - nautobot_collectstatic
+   - name: install nautobot local_requirements
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - runuser -l {{ system_nb_user }} -c 'pip3 install -r {{ system_nb_home_dir }}/local_requirements.txt'
+     tags:
+     - install_local_requirements
+   - name: add initial plugins to nautobot_config.py
+     become: true
+     ansible.builtin.lineinfile:
+       path: '{{ system_nb_home_dir }}/nautobot_config.py'
+       regexp: '^# PLUGINS = \[\]'
+       line: 'PLUGINS = {{ nb_app_plugins }}'
+     tags:
+     - add_nautobot_plugins
+   - name: nautobot post_upgrade
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server post_upgrade\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - nautobot_post_upgrade
+   - name: nautobot check
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server check\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     register: nb_check_result
+     tags:
+     - nautobot_check
+   - name: nautobot test application
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "nautobot-server runserver 0.0.0.0:8080 --insecure\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - nautobot_test_app
+   - name: copu uwsgi config file and change owner to nautobot
+     become: true
+     ansible.builtin.copy:
+       src: ./files/uwsgi.ini
+       dest: '{{ system_nb_home_dir }}/uwsgi.ini'
+       owner: "{{ system_nb_user }}"
+       group: "{{ system_nb_user }}"
+       mode: u=rw,g=rw,o=r
+     tags:
+     - copy_uwsgi_config
+   - name: copu nautobot.service to /etc/systemd/system/
+     become: true
+     ansible.builtin.copy:
+       src: ./files/nautobot.service
+       dest: /etc/systemd/system/nautobot.service
+     tags:
+     - copy_nautobot_service
+     - nautobot_services_to_systemd
+   - name: copu nautobot-worker.service to /etc/systemd/system/
+     become: true
+     ansible.builtin.copy:
+       src: ./files/nautobot-worker.service
+       dest: /etc/systemd/system/nautobot-worker.service
+     tags:
+     - copy_nautobot_worker_service
+     - nautobot_services_to_systemd
+   - name: copu nautobot-scheduler.service to /etc/systemd/system/
+     become: true
+     ansible.builtin.copy:
+       src: ./files/nautobot-scheduler.service
+       dest: /etc/systemd/system/nautobot-scheduler.service
+     tags:
+     - copy_nautobot_scheduler_service
+     - nautobot_services_to_systemd
+   - name: reload systemd
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - systemctl daemon-reload
+     tags:
+     - reload_systemd
+     - enable_all_nb_services
+   - name: systemd enable nautobot.service
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - systemctl enable --now nautobot nautobot-worker nautobot-scheduler
+     tags:
+     - enable_nb_service
+     - enable_all_nb_services
+   - name: generate naughty https private key
+     become: true
+     community.crypto.openssl_privatekey:
+       path: /etc/ssl/private/nautobot.key
+       size: 2048
+     tags:
+     - generate_nb_cert
+   - name: generate nautobot https certificate
+     become: true
+     openssl_certificate:
+       path: /etc/ssl/certs/nautobot.crt
+       privatekey_path: /etc/ssl/private/nautobot.key
+       provider: selfsigned
+     tags:
+     - generate_nb_cert
+   - name: apt install nginx
+     become: true
+     apt:
+       pkg:
+         - nginx
+       state: latest
+       update_cache: true
+     tags:
+     - install_nginx
+   - name: copu nautobot nginx config to /etc/nginx/sites-available/
+     become: true
+     ansible.builtin.copy:
+       src: ./files/nautobot.conf
+       dest: /etc/nginx/sites-available/nautobot.conf
+     tags:
+     - copy_nginx_nb_conf
+     - start_nginx
+   - name: prep and restart nginx
+     become: true
+     command: "{{ item }}"
+     with_items:
+       - rm -f /etc/nginx/sites-enabled/default
+       - ln -s /etc/nginx/sites-available/nautobot.conf /etc/nginx/sites-enabled/nautobot.conf
+       - systemctl restart nginx
+     tags:
+     - start_nginx
+   - name: chmod nautobot root
+     ansible.builtin.shell: |
+        set force_conservative 0
+                                
+        if {$force_conservative} {
+                set send_slow {1 .1}
+                proc send {ignore arg} {
+                        sleep .1
+                        exp_send -s -- $arg
+                }
+        }
+        
+        
+        set timeout -1
+        spawn $env(SHELL)
+        match_max 100000
+        send -- "sudo -iu {{ system_nb_user }}\r"
+        expect -exact "\[sudo\] password for {{ ansible_user }}: "
+        send -- "{{ ansible_become_password }}\r"
+        expect "$ "
+        send -- "chmod 755 {{ system_nb_home_dir }}\r"
+        expect "$ "
+        send -- "exit\r"
+        expect "$ "
+        send -- "exit\r"
+     args:
+       executable: /usr/bin/expect
+     tags:
+     - chmod_nb_root

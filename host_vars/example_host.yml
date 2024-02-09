@@ -1,0 +1,39 @@
+interfaces:
+# list of interfaces on the local machine. see templates/netplan/production.j2 for all aceppted variables
+# used to create the netplan config file
+  - name:
+    dhcp4:
+  - name:
+    addresses:
+      - ip_address:
+        cidr:
+    routes:
+      - destination:
+        next_hop:
+# version of nodejs to install. defaults to 18. reference nodejs docs for available versions
+node_js_version:
+# default postgres user. defaults to postgres
+postgres_default_user:
+# postgres user to create for nautobot.
+postgres_nb_user:
+# postgres user password to create for nautobot.
+postgres_nb_password:
+# postgres database name to create for nautobot.
+postgres_db_name:
+# home directory for the local system nautobot user account. nautobot docs specify /opt/nautobot
+system_nb_home_dir:
+# local system nautobot user account. nautobot docs specify nautobot
+system_nb_user:
+# local system nautobot user account password. nautobot docs specify nautobot
+system_nb_password:
+# version of nautobot to install using pip3. defaults to "==2.1.2". reference nautobot docs for available versions
+nb_app_version:
+# list of allowed hostnames or ip addresses for the nauotbot app to be accessed by.
+allowed_hosts: []
+# list of nautobot plugins to install. nautobot_bgp_models and napalm are installed with pip3 by default.
+# see nautobot docs for available plugins and their installation instructions
+nb_app_plugins: []
+# superuser for the nautobot app. used to login to the web interface.
+nb_app_superuser:
+# superuser password for the nautobot app. used to login to the web interface.
+nb_app_superuser_password:
