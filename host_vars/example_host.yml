@@ -31,7 +31,7 @@ nb_app_version:
 # list of allowed hostnames or ip addresses for the nauotbot app to be accessed by.
 allowed_hosts: []
 # list of nautobot plugins to install. nautobot_bgp_models and napalm are installed with pip3 by default.
-# see nautobot docs for available plugins and their installation instructions
+# nautobot_bgp_models is the default plugin activated w/ this variable. see nautobot docs for available plugins and their installation instructions
 nb_app_plugins: []
 # superuser for the nautobot app. used to login to the web interface.
 nb_app_superuser:

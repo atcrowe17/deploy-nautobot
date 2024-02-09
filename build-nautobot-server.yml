@@ -398,7 +398,7 @@
      ansible.builtin.lineinfile:
        path: '{{ system_nb_home_dir }}/nautobot_config.py'
        regexp: '^# PLUGINS = \[\]'
-       line: 'PLUGINS = {{ nb_app_plugins }}'
+       line: 'PLUGINS = {{ nb_app_plugins | default("[nautobot_bgp_models]") }}'
      tags:
      - add_nautobot_plugins
    - name: nautobot post_upgrade
@@ -489,7 +489,7 @@
   #      executable: /usr/bin/expect
   #    tags:
   #    - nautobot_test_app
-   - name: copu uwsgi config file and change owner to nautobot
+   - name: copy uwsgi config file and change owner to nautobot
      become: true
      ansible.builtin.copy:
        src: ./files/uwsgi.ini
@@ -499,7 +499,7 @@
        mode: u=rw,g=rw,o=r
      tags:
      - copy_uwsgi_config
-   - name: copu nautobot.service to /etc/systemd/system/
+   - name: copy nautobot.service to /etc/systemd/system/
      become: true
      ansible.builtin.copy:
        src: ./files/nautobot.service
@@ -507,7 +507,7 @@
      tags:
      - copy_nautobot_service
      - nautobot_services_to_systemd
-   - name: copu nautobot-worker.service to /etc/systemd/system/
+   - name: copy nautobot-worker.service to /etc/systemd/system/
      become: true
      ansible.builtin.copy:
        src: ./files/nautobot-worker.service
@@ -515,7 +515,7 @@
      tags:
      - copy_nautobot_worker_service
      - nautobot_services_to_systemd
-   - name: copu nautobot-scheduler.service to /etc/systemd/system/
+   - name: copy nautobot-scheduler.service to /etc/systemd/system/
      become: true
      ansible.builtin.copy:
        src: ./files/nautobot-scheduler.service
@@ -563,7 +563,7 @@
        update_cache: true
      tags:
      - install_nginx
-   - name: copu nautobot nginx config to /etc/nginx/sites-available/
+   - name: copy nautobot nginx config to /etc/nginx/sites-available/
      become: true
      ansible.builtin.copy:
        src: ./files/nautobot.conf
