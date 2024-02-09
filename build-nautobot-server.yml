@@ -460,35 +460,35 @@
      register: nb_check_result
      tags:
      - nautobot_check
-   - name: nautobot test application
-     ansible.builtin.shell: |
-        set force_conservative 0
+  #  - name: nautobot test application
+  #    ansible.builtin.shell: |
+  #       set force_conservative 0
                                 
-        if {$force_conservative} {
-                set send_slow {1 .1}
-                proc send {ignore arg} {
-                        sleep .1
-                        exp_send -s -- $arg
-                }
-        }
+  #       if {$force_conservative} {
+  #               set send_slow {1 .1}
+  #               proc send {ignore arg} {
+  #                       sleep .1
+  #                       exp_send -s -- $arg
+  #               }
+  #       }
         
         
-        set timeout -1
-        spawn $env(SHELL)
-        match_max 100000
-        send -- "sudo -iu {{ system_nb_user }}\r"
-        expect -exact "\[sudo\] password for {{ ansible_user }}: "
-        send -- "{{ ansible_become_password }}\r"
-        expect "$ "
-        send -- "nautobot-server runserver 0.0.0.0:8080 --insecure\r"
-        expect "$ "
-        send -- "exit\r"
-        expect "$ "
-        send -- "exit\r"
-     args:
-       executable: /usr/bin/expect
-     tags:
-     - nautobot_test_app
+  #       set timeout -1
+  #       spawn $env(SHELL)
+  #       match_max 100000
+  #       send -- "sudo -iu {{ system_nb_user }}\r"
+  #       expect -exact "\[sudo\] password for {{ ansible_user }}: "
+  #       send -- "{{ ansible_become_password }}\r"
+  #       expect "$ "
+  #       send -- "nautobot-server runserver 0.0.0.0:8080 --insecure\r"
+  #       expect "$ "
+  #       send -- "exit\r"
+  #       expect "$ "
+  #       send -- "exit\r"
+  #    args:
+  #      executable: /usr/bin/expect
+  #    tags:
+  #    - nautobot_test_app
    - name: copu uwsgi config file and change owner to nautobot
      become: true
      ansible.builtin.copy:
